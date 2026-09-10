@@ -14,6 +14,7 @@ aws cloudformation create-stack \
 
 
 ## Tear down instructions
+
 To delete the resources without UI interaction:
 
 aws cloudformation delete-stack \
