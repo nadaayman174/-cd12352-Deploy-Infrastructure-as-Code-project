@@ -1,18 +1,240 @@
-Description: CD12352 - Infrastructure as Code Project - Udagram
-
 Parameters:
-  # Add your parameters here
+  EnvironmentName:
+    Description: An environment name that will be prefixed to resource names
+    Type: String
+
+
 
 Resources:
-  # Add your resources here
-  # We include a portion of the LaunchTemplate resource so you can use the UserData.
+
+  LBSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http access to our load balancer 
+      VpcId:
+        Fn::ImportValue:
+          !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+
+
+  WebServerSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http access to our hosts from the LB Security Group
+      VpcId:
+        Fn::ImportValue:
+          !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        SourceSecurityGroupId: !Ref LBSecGroup
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 0
+        ToPort: 65535
+        CidrIp: 0.0.0.0/0
+
+#####################################################################
+
   WebAppLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties: 
+      LaunchTemplateName: !Sub "${EnvironmentName}-web-servers"
+
       LaunchTemplateData:
         UserData:
-          Fn::Base64: |
+          Fn::Base64: !Sub |
             #!/bin/bash
+
             apt-get update -y
-            sudo apt-get install nginx -y
-            service nginx start
+            apt-get install nginx -y
+
+            systemctl start nginx
+
+            # create the index.html file
+            cat <<EOF > /var/www/html/index.html
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <title>It works! Udagram, Udacity</title>
+            </head>
+            <body>
+              <h1>It works! Udagram, Udacity</h1>
+              <p>This website is hosted on Nginx</p>
+            </body>
+            </html>
+            EOF
+
+            systemctl reload nginx
+
+
+        ImageId: ami-0b6d9d3d33ba97d99
+
+        SecurityGroupIds:
+          - !Ref WebServerSecGroup
+
+        InstanceType: t3.micro
+
+        BlockDeviceMappings:
+        - DeviceName: "/dev/sdk"
+          Ebs:
+            VolumeSize: '10'
+
+        IamInstanceProfile:
+          Name: !Ref WebAppInstanceProfile #we give ec2 access to AWS resources
+
+
+  WebAppInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${EnvironmentName}-web-servers"
+      AssumeRolePolicyDocument: #define who is allowed to use or assume this role
+        Version: '2012-10-17'
+
+        Statement: #start the list of rules in the policy
+        - Effect: 'Allow' #yes
+          Principal: #defines who is being allowed
+            Service:
+            - 'ec2.amazonaws.com' 
+          Action:
+          - 'sts:AssumeRole' #Allows EC2 to assume/use this IAM Role
+
+#Allow EC2 instnace to use this role
+
+      Policies: #WHAT
+        - PolicyName: s3
+          PolicyDocument:
+            Version: '2012-10-17'
+
+            Statement:
+            - Effect: Allow
+              Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+
+              Resource:
+                - !Sub "${mybucket.Arn}/*"
+   #ALLOW EC2 to GET objects from this S3 bucket.             
+
+
+  WebAppInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: '/'
+      Roles:
+      - !Ref WebAppInstanceRole
+
+
+################################################## S3 ############################################ 
+  mybucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: udagrambucket1234
+      AccessControl: PublicRead
+      VersioningConfiguration:
+        Status: Enabled
+
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        IgnorePublicAcls: false
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+
+
+################################################################################################
+
+
+#auto scaling group
+
+  WebAppGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+
+    Properties:
+      VPCZoneIdentifier:
+      - Fn::ImportValue: 
+          !Sub "${EnvironmentName}-PRIVATE-NETS"
+
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebAppLaunchTemplate
+        Version: !GetAtt WebAppLaunchTemplate.LatestVersionNumber
+      MinSize: '1'
+      DesiredCapacity: '1'
+      MaxSize: '3'
+
+      TargetGroupARNs:
+      - Ref: WebAppTargetGroup 
+
+    #################################################
+
+
+
+  WebAppLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+      - Fn::ImportValue: !Sub "${EnvironmentName}-PUBLIC1-SN"
+      - Fn::ImportValue: !Sub "${EnvironmentName}-PUBLIC2-SN"
+      SecurityGroups:
+      - Ref: LBSecGroup
+
+
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: WebAppTargetGroup
+      LoadBalancerArn:
+        Ref: WebAppLB
+      Port: '80'
+      Protocol: HTTP
+
+  ALBListenerRule:
+      Type: AWS::ElasticLoadBalancingV2::ListenerRule
+      Properties:
+        Actions:
+        - Type: forward
+          TargetGroupArn: !Ref 'WebAppTargetGroup'
+        Conditions:
+        - Field: path-pattern
+          Values: [/]
+        ListenerArn: !Ref 'Listener'
+        Priority: 1
+
+  WebAppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 8
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: 
+        Fn::ImportValue:
+          Fn::Sub: "${EnvironmentName}-VPCID"
+
+
+#############################################
+
+Outputs:
+
+  LoadBalancerURL:
+    Description: Public URL of the Load Balancer (to get the DNS Name)
+    Value: !Sub "http://${WebAppLB.DNSName}"
+    Export:
+      Name: !Sub "${EnvironmentName}-LB-URL"
