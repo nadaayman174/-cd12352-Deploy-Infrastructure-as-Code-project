@@ -16,5 +16,4 @@ aws cloudformation delete-stack \
     --stack-name Network-Stack \
     --region us-east-1
 
-## Other considerations
 
