@@ -1,11 +1,20 @@
 # CD12352 - Infrastructure as Code Project Solution
-# [YOUR NAME HERE]
+# [Nada Ayman]
 
-## Spin up instructions
-TODO
+## Spin up instructions -- To create a stack:
+
+aws cloudformation create-stack \
+  --stack-name Network-Stack \
+  --template-body file://mynetwork.yml \
+  --parameters file://mynetwork-parameters.json \
+  --region us-east-1 
+  
 
 ## Tear down instructions
-TODO
+
+aws cloudformation delete-stack \
+    --stack-name Network-Stack \
+    --region us-east-1
 
 ## Other considerations
-TODO (optional)
+
